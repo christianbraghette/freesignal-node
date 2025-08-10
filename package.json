@@ -1,0 +1,16 @@
+{
+  "name": "freesignal-node",
+  "version": "0.0.1",
+  "description": "",
+  "keywords": [],
+  "license": "GPL-3.0-or-later",
+  "author": "Christian Braghette",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.1"
+  }
+}
