@@ -1,6 +1,6 @@
 {
   "name": "freesignal-node",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "",
   "keywords": [],
   "license": "GPL-3.0-or-later",
@@ -8,14 +8,18 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "tsc && node ./build/test.js"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
-    "@types/node": "^24.2.1"
+    "@types/node": "^24.2.1",
+    "@types/qrcode": "^1.5.5"
   },
   "dependencies": {
+    "@freesignal/protocol": "^0.2.0",
     "@seald-io/nedb": "^4.1.2",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "fflate": "^0.8.2",
+    "qrcode": "^1.5.4"
   }
 }
