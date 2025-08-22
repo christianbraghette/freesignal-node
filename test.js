@@ -10,7 +10,7 @@ app.all('/messages', (req, res) => {
     // Assuming req.body.datagrams is an array of datagram strings
     //const datagrams = JSON.parse(req.body);
 
-    console.log("Body: ", req.body);
+    console.log("Body: ", req.body instanceof Uint8Array);
 
     // Process the datagrams here
     // For example, save them to a database or send them to another service
@@ -29,6 +29,6 @@ app.listen(3000, () => {
         },
         body: new Uint8Array(10).fill(45)
             //JSON.stringify({ test: "Dio" })
-    }).then(data => [data.headers.get('Content-Type'), data.bytes()]).then(async data => console.log(await data[0], await data[1]));
+    }).then(async data => [data.headers.get('Content-Type'), new Uint8Array(await data.arrayBuffer())]).then(async data => console.log(await data[0], await data[1]));
 });
 

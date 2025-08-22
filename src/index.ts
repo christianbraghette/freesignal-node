@@ -1,5 +1,5 @@
 import express, { Request, Response } from 'express';
-import { numberToUint8Array } from '@freesignal/utils';
+import { encodeBase64, numberToUint8Array } from '@freesignal/utils';
 import { KeyExchangeData, KeyExchangeDataBundle, LocalStorage } from '@freesignal/interfaces';
 import { Datastore } from './datastore';
 import { Datagram, Protocols } from '@freesignal/protocol';
@@ -16,13 +16,6 @@ const BODY_LIMIT = "10mb";
     name: string;
     authToken: string;
     publicKey: string;
-    class NodeModule {
-    private readonly node: FreeSignalNode;
-
-    constructor(node: FreeSignalNode) {
-        this.node = node;
-    }
-}
 }*/
 
 type UserId = string;
@@ -30,14 +23,14 @@ type DatagramId = string;
 type PublicKey = string;
 
 class FreeSignalNode extends FreeSignalAPI {
-    public readonly dbpath: string;
-    private readonly datagrams: LocalStorage<DatagramId, { datagram: Datagram, seen: boolean }>;
-    private readonly inbox: LocalStorage<UserId, DatagramId[]>;
-    private readonly outbox: LocalStorage<DatagramId, Datagram>;
-    private readonly keystore: LocalStorage<PublicKey, KeyExchangeDataBundle>;
+    public readonly dbPath: string;
+    protected readonly datagrams: LocalStorage<DatagramId, { datagram: Datagram, seen: boolean }>;
+    protected readonly inbox: LocalStorage<UserId, DatagramId[]>;
+    protected readonly outbox: LocalStorage<DatagramId, Datagram>;
+    protected readonly keystore: LocalStorage<PublicKey, KeyExchangeDataBundle>;
 
-    private _postWorker?: NodeJS.Timeout;
-    private readonly app = express();;
+    protected _postWorker?: NodeJS.Timeout;
+    protected readonly app = express();;
 
     public constructor(secretSignKey: Uint8Array, secretBoxKey: Uint8Array, opts: {
         autostart?: boolean;
@@ -56,7 +49,7 @@ class FreeSignalNode extends FreeSignalAPI {
             users: new Datastore(`${dbpath}/users.db`)
         });
 
-        this.dbpath = dbpath;
+        this.dbPath = dbpath;
         this.datagrams = new Datastore(`${dbpath}/messages.db`)
         this.inbox = new Datastore(`${dbpath}/inbox.db`);
         this.outbox = new Datastore(`${dbpath}/outbox.db`);
@@ -65,9 +58,7 @@ class FreeSignalNode extends FreeSignalAPI {
         this.app.use(express.raw({ type: FREESIGNAL_MIME, limit: BODY_LIMIT }));
         this.app.get('/datagrams', this.getDatagrams);
         this.app.post('/datagrams', this.postDatagrams);
-        this.app.delete('/datagrams', async (req: Request, res: Response) => {
-
-        });
+        this.app.delete('/datagrams', this.deleteDatagrams);
 
         this.app.get('/handshake/:id?', this.getHandshake);
         this.app.post('/handshake', (req: Request, res: Response) => {
@@ -77,7 +68,7 @@ class FreeSignalNode extends FreeSignalAPI {
         if (autostart) this.start(port ?? 3000);
     }
 
-    private readonly outboxWorker = async () => {
+    protected readonly outboxWorker = async () => {
         if (!this._postWorker)
             this._postWorker = setTimeout(this.outboxWorker, 5000);
         const outbox = Array.from(await this.outbox.entries());
@@ -87,7 +78,7 @@ class FreeSignalNode extends FreeSignalAPI {
         this._postWorker.refresh();
     }
 
-    private readonly getHandshake = async (req: Request, res: Response) => {
+    protected readonly getHandshake = async (req: Request, res: Response) => {
         try {
             if (req.params.id) {
                 const bundle = await this.keystore.get(req.params.id);
@@ -114,14 +105,15 @@ class FreeSignalNode extends FreeSignalAPI {
         }
     }
 
-    private readonly getDatagrams = async (req: Request, res: Response) => {
+    protected readonly getDatagrams = async (req: Request, res: Response) => {
         try {
-            const { userId, identityKeys } = await this.digestToken(req.headers.authorization);
+            const { userId } = await this.digestToken(req.headers.authorization);
             const datagrams = (await Promise.all(
                 (await this.inbox.get(userId) || []).map(messageId => this.datagrams.get(messageId))
             )).filter(message => !!message)
                 .filter(message => !message.seen)
                 .map(message => message.datagram);
+            await Promise.all(datagrams.map(datagram => this.datagrams.set(datagram.id, { datagram, seen: true })));
             const data = await this.encryptData(this.packDatagrams(datagrams), userId);
             return res.status(200).type(FREESIGNAL_MIME).send(data.encode());
         } catch (error: any) {
@@ -129,14 +121,14 @@ class FreeSignalNode extends FreeSignalAPI {
         }
     }
 
-    private readonly postDatagrams = async (req: Request, res: Response) => {
+    protected readonly postDatagrams = async (req: Request, res: Response) => {
         try {
             const { userId } = await this.digestToken(req.headers.authorization);
             if (!req.body) {
                 return res.status(400).json({ error: 'Body is required' });
             }
             try {
-                const datagrams = this.unpackDatagrams(await this.decryptData(new Uint8Array(req.body as Buffer), userId));
+                const datagrams = this.unpackDatagrams(await this.decryptData(req.body as Uint8Array, userId));
                 try {
                     if (datagrams.length === 0) return 0;
                     const map = new Map<UserId, DatagramId[]>();
@@ -162,6 +154,28 @@ class FreeSignalNode extends FreeSignalAPI {
                 }
             } catch (error: any) {
                 return res.status(400).json({ error: error.message });
+            }
+        } catch (error: any) {
+            return res.status(401).json({ error: error.message });
+        }
+    }
+
+    protected readonly deleteDatagrams = async (req: Request, res: Response) => {
+        try {
+            const { userId } = await this.digestToken(req.headers.authorization);
+            if (!req.body) {
+                return res.status(400).json({ error: 'Body is required' });
+            }
+            try {
+                const data = await this.decryptData(req.body as Uint8Array, userId);
+                let count = 0;
+                for (let i = 0; i < data.length; i += 16) {
+                    await this.datagrams.delete(encodeBase64(data.subarray(i, i + 16)));
+                    count++;
+                }
+                return res.status(201).type(FREESIGNAL_MIME).send(await this.encryptData(numberToUint8Array(count), userId));
+            } catch (error: any) {
+                return res.status(500).json({ error: error.message });
             }
         } catch (error: any) {
             return res.status(401).json({ error: error.message });
