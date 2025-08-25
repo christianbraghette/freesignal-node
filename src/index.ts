@@ -1,24 +1,15 @@
 import express, { Request, Response } from 'express';
-import { encodeBase64, numberToUint8Array } from '@freesignal/utils';
+import { numberToUint8Array, encodeJSON, decodeJSON } from '@freesignal/utils';
 import { KeyExchangeData, KeyExchangeDataBundle, LocalStorage } from '@freesignal/interfaces';
 import { Datastore } from './datastore';
 import { Datagram, Protocols } from '@freesignal/protocol';
 import { FreeSignalAPI } from '@freesignal/protocol/api';
-import QRCode from 'qrcode';
+import { UserId } from '@freesignal/protocol/types';
 
 
 const FREESIGNAL_MIME = "application/x-freesignal";
 const BODY_LIMIT = "10mb";
 
-/*interface User {
-    id: string;
-    relay: string;
-    name: string;
-    authToken: string;
-    publicKey: string;
-}*/
-
-type UserId = string;
 type DatagramId = string;
 type PublicKey = string;
 
@@ -56,14 +47,15 @@ class FreeSignalNode extends FreeSignalAPI {
         this.keystore = new Datastore(`${dbpath}/keystore.db`);
 
         this.app.use(express.raw({ type: FREESIGNAL_MIME, limit: BODY_LIMIT }));
-        this.app.get('/datagrams', this.getDatagrams);
-        this.app.post('/datagrams', this.postDatagrams);
-        this.app.delete('/datagrams', this.deleteDatagrams);
 
-        this.app.get('/handshake/:id?', this.getHandshake);
-        this.app.post('/handshake', (req: Request, res: Response) => {
-            res.status(200).json({ message: 'Welcome to the Pizzino Node API!' });
-        });
+        this.app.get('/datagrams', this.getDatagramsHandler);
+        this.app.post('/datagrams', this.postDatagramsHandler);
+        this.app.delete('/datagrams', this.deleteDatagramsHandler);
+
+        this.app.get('/handshake/:id?', this.getHandshakeHandler);
+        this.app.post('/handshake', this.postHandshakeHandler);
+        this.app.put('/handshake', this.putHandshakeHandler);
+        this.app.delete('/handshake', this.deleteHandshakeHandler);
 
         if (autostart) this.start(port ?? 3000);
     }
@@ -78,7 +70,7 @@ class FreeSignalNode extends FreeSignalAPI {
         this._postWorker.refresh();
     }
 
-    protected readonly getHandshake = async (req: Request, res: Response) => {
+    protected readonly getHandshakeHandler = async (req: Request, res: Response) => {
         try {
             if (req.params.id) {
                 const bundle = await this.keystore.get(req.params.id);
@@ -95,17 +87,71 @@ class FreeSignalNode extends FreeSignalAPI {
                         await this.keystore.delete(req.params.id);
                     else
                         await this.keystore.set(req.params.id, bundle);
-                    return data;
+                    return res.status(202).type(FREESIGNAL_MIME).send(data);
                 }
                 return res.status(400).json({ error: 'Key bundle not found' });
             }
-            return res.status(201).type(FREESIGNAL_MIME).send(this.keyExchange.generateData())
+            return res.status(201).type(FREESIGNAL_MIME).send(encodeJSON(this.keyExchange.generateData()));
         } catch (error: any) {
             return res.status(500).json({ error: error.message })
         }
     }
 
-    protected readonly getDatagrams = async (req: Request, res: Response) => {
+    protected readonly postHandshakeHandler = async (req: Request, res: Response) => {
+        try {
+            if (!req.body) {
+                return res.status(400).json({ error: 'Body is required' });
+            }
+            try {
+                const { session, identityKeys } = await this.keyExchange.digestMessage(decodeJSON(req.body));
+                const userId = UserId.getUserId(identityKeys.publicKey).toString();
+                this.users.set(userId, identityKeys);
+                this.sessions.set(userId, session);
+                return res.status(200);
+            } catch (error: any) {
+                return res.status(500).json({ error: error.message });
+            }
+        } catch (error: any) {
+            return res.status(401).json({ error: error.message });
+        }
+    }
+
+    protected readonly putHandshakeHandler = async (req: Request, res: Response) => {
+        try {
+            const { userId } = await this.digestToken(req.headers.authorization);
+            if (!req.body) {
+                return res.status(400).json({ error: 'Body is required' });
+            }
+            try {
+                const bundle = decodeJSON<KeyExchangeDataBundle>(await this.decryptData(req.body as Uint8Array, userId));
+                await this.keystore.set(userId, bundle);
+                return res.status(201);
+            } catch (error: any) {
+                return res.status(500).json({ error: error.message });
+            }
+        } catch (error: any) {
+            return res.status(401).json({ error: error.message });
+        }
+    }
+
+    protected readonly deleteHandshakeHandler = async (req: Request, res: Response) => {
+        try {
+            const { userId } = await this.digestToken(req.headers.authorization);
+            if (req.body) {
+                return res.status(400).json({ error: 'Unexpected request body' });
+            }
+            try {
+                await this.keystore.delete(userId);
+                return res.status(200);
+            } catch (error: any) {
+                return res.status(500).json({ error: error.message });
+            }
+        } catch (error: any) {
+            return res.status(401).json({ error: error.message });
+        }
+    }
+
+    protected readonly getDatagramsHandler = async (req: Request, res: Response) => {
         try {
             const { userId } = await this.digestToken(req.headers.authorization);
             const datagrams = (await Promise.all(
@@ -121,7 +167,7 @@ class FreeSignalNode extends FreeSignalAPI {
         }
     }
 
-    protected readonly postDatagrams = async (req: Request, res: Response) => {
+    protected readonly postDatagramsHandler = async (req: Request, res: Response) => {
         try {
             const { userId } = await this.digestToken(req.headers.authorization);
             if (!req.body) {
@@ -160,20 +206,17 @@ class FreeSignalNode extends FreeSignalAPI {
         }
     }
 
-    protected readonly deleteDatagrams = async (req: Request, res: Response) => {
+    protected readonly deleteDatagramsHandler = async (req: Request, res: Response) => {
         try {
             const { userId } = await this.digestToken(req.headers.authorization);
             if (!req.body) {
                 return res.status(400).json({ error: 'Body is required' });
             }
             try {
-                const data = await this.decryptData(req.body as Uint8Array, userId);
-                let count = 0;
-                for (let i = 0; i < data.length; i += 16) {
-                    await this.datagrams.delete(encodeBase64(data.subarray(i, i + 16)));
-                    count++;
-                }
-                return res.status(201).type(FREESIGNAL_MIME).send(await this.encryptData(numberToUint8Array(count), userId));
+                const ids = this.unpackIdList(await this.decryptData(req.body as Uint8Array, userId))
+                for (const id of ids)
+                    await this.datagrams.delete(id);
+                return res.status(200).type(FREESIGNAL_MIME).send(await this.encryptData(numberToUint8Array(ids.length), userId));
             } catch (error: any) {
                 return res.status(500).json({ error: error.message });
             }
@@ -192,13 +235,6 @@ class FreeSignalNode extends FreeSignalAPI {
 
         this.outboxWorker();
     }
-
-    /*async handskake(): Promise<string> {
-        const handshakeId = encodeBase64(crypto.randomBytes(16));
-        const handshakeData = crypto.randomBytes(crypto.box.keyLength);
-        this.handshakes.set(handshakeId, handshakeData);
-        return await QRCode.toString(JSON.stringify({ id: handshakeId, data: handshakeData }), { type: 'terminal' });
-    }*/
 
 }
 

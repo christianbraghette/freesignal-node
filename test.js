@@ -1,21 +1,25 @@
 
 const express = require('express');
+const { DecodeUTF8 } = require('fflate');
 
 const app = express();
 
 app.use(express.raw());
-app.use(express.json());
+//app.use(express.json());
 
 app.all('/messages', (req, res) => {
     // Assuming req.body.datagrams is an array of datagram strings
     //const datagrams = JSON.parse(req.body);
 
-    console.log("Body: ", req.body instanceof Uint8Array);
+    console.log("Body: ", JSON.parse(new TextDecoder().decode(req.body)));
 
+    const data = {
+        id: "Dio"
+    }
     // Process the datagrams here
     // For example, save them to a database or send them to another service
 
-    res.status(200).type("application/octet-stream").send(new Uint8Array(5).fill(48));
+    res.status(200).type("application/octet-stream").send(data);
 });
 
 app.listen(3000, () => {
@@ -25,10 +29,11 @@ app.listen(3000, () => {
         method: 'POST',
         headers: {
             'Content-Type': //'application/json'
-            'application/octet-stream'
+                'application/octet-stream'
         },
-        body: new Uint8Array(10).fill(45)
-            //JSON.stringify({ test: "Dio" })
-    }).then(async data => [data.headers.get('Content-Type'), new Uint8Array(await data.arrayBuffer())]).then(async data => console.log(await data[0], await data[1]));
+        body: JSON.stringify({
+            id: "Dio"
+        })
+    }).then(async data => new Uint8Array(await data.arrayBuffer())).then(data => console.log(JSON.parse(new TextDecoder().decode(data))));
 });
 

@@ -1,4 +1,4 @@
-import { LocalStorage } from "@freesignal/protocol";
+import { LocalStorage } from "@freesignal/interfaces";
 import DB from '@seald-io/nedb';
 
 export class Datastore<K, T> implements LocalStorage<K, T> {

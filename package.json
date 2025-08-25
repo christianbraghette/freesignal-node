@@ -19,7 +19,6 @@
     "@freesignal/protocol": "^0.2.0",
     "@seald-io/nedb": "^4.1.2",
     "express": "^5.1.0",
-    "fflate": "^0.8.2",
-    "qrcode": "^1.5.4"
+    "fflate": "^0.8.2"
   }
 }
